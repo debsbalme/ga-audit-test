@@ -1,1 +1,16 @@
-streamlit
+# ---- UI ----
+streamlit>=1.32.0
+
+# ---- Data handling ----
+pandas>=2.0.0
+
+# ---- Google authentication ----
+google-auth>=2.30.0
+google-auth-httplib2>=0.2.0
+
+# ---- Google APIs: GA4 Admin + Data ----
+google-analytics-admin>=0.22.0
+google-analytics-data>=0.18.0
+
+# ---- Google Tag Manager API ----
+google-api-python-client>=2.120.0
