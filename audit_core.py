@@ -35,7 +35,7 @@ from google.analytics.admin_v1alpha.types import (
     ListRollupPropertySourceLinksRequest,
     ListSubpropertyEventFiltersRequest,
     SearchChangeHistoryEventsRequest,
-
+)
 # ----------------------------
 # Normalized output model
 # ----------------------------
