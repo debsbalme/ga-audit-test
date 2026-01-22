@@ -28,6 +28,13 @@ from google.analytics.data_v1beta.types import (
 # GTM (discovery)
 from googleapiclient.discovery import build
 
+from google.analytics.admin_v1alpha import AnalyticsAdminServiceClient as AnalyticsAdminServiceClientV1Alpha
+from google.analytics.admin_v1alpha.types import (
+    GetGoogleSignalsSettingsRequest,
+    GetAttributionSettingsRequest,
+    ListRollupPropertySourceLinksRequest,
+    ListSubpropertyEventFiltersRequest,
+    SearchChangeHistoryEventsRequest,
 
 # ----------------------------
 # Normalized output model
@@ -53,14 +60,15 @@ def findings_to_df(findings: List[Finding]) -> pd.DataFrame:
 # Client builders (auth-agnostic)
 # ----------------------------
 
-def build_clients(creds) -> Tuple[AnalyticsAdminServiceClient, BetaAnalyticsDataClient, object]:
+def build_clients(creds):
     """
-    Build GA Admin, GA Data, and GTM clients from any valid Google Credentials object.
+    Build GA Admin v1beta, GA Admin v1alpha (for advanced settings), GA Data, and GTM.
     """
-    admin_client = AnalyticsAdminServiceClient(credentials=creds)
+    admin_beta = AnalyticsAdminServiceClient(credentials=creds)
+    admin_alpha = AnalyticsAdminServiceClientV1Alpha(credentials=creds)
     data_client = BetaAnalyticsDataClient(credentials=creds)
     gtm = build("tagmanager", "v2", credentials=creds, cache_discovery=False)
-    return admin_client, data_client, gtm
+    return admin_beta, admin_alpha, data_client, gtm
 
 
 # ----------------------------
@@ -91,6 +99,300 @@ def admin_get_global_site_tag_snippet(admin: AnalyticsAdminServiceClient, stream
     except Exception:
         return None
 
+def _safe_call(fn, *, default=None, **kwargs):
+    try:
+        return fn(**kwargs), None
+    except Exception as e:
+        return default, f"{type(e).__name__}: {e}"
+
+def _safe_list(fn, *, default=None, **kwargs):
+    try:
+        return list(fn(**kwargs)), None
+    except Exception as e:
+        return default if default is not None else [], f"{type(e).__name__}: {e}"
+
+
+def _safe_list(admin, method_name: str, *, parent: str) -> Dict[str, Any]:
+    """
+    Calls admin.<method_name>(parent=...) if available.
+    Returns {available, count, items, error}
+    """
+    if not hasattr(admin, method_name):
+        return {"available": False, "count": None, "items": None, "error": f"Method not available: {method_name}"}
+
+    try:
+        method = getattr(admin, method_name)
+        items = list(method(parent=parent))
+        return {"available": True, "count": len(items), "items": items, "error": None}
+    except Exception as e:
+        return {"available": True, "count": None, "items": None, "error": f"{type(e).__name__}: {e}"}
+
+def get_property_profile(
+    *,
+    property_id: str,
+    admin_beta: AnalyticsAdminServiceClient,
+    admin_alpha: AnalyticsAdminServiceClientV1Alpha,
+    data_client: BetaAnalyticsDataClient,
+    days_events_lookback: int = 7,
+    change_history_days_lookback: int = 90,
+) -> Dict[str, Any]:
+    """
+    Build a property-level profile capturing as many of the requested fields as possible.
+
+    Returns a dict with:
+      - profile: extracted fields
+      - availability/errors: per-surface diagnostics
+    """
+    profile: Dict[str, Any] = {"property_id": property_id}
+    diag: Dict[str, Any] = {"errors": {}, "availability": {}}
+
+    # ---- Property (v1beta) ----
+    prop, err = _safe_call(admin_beta.get_property, name=f"properties/{property_id}")
+    if err:
+        diag["errors"]["get_property_v1beta"] = err
+        return {"profile": profile, "diagnostics": diag}
+
+    # Core property fields
+    profile.update({
+        "property_name": getattr(prop, "display_name", None),
+        "property_resource_name": getattr(prop, "name", None),
+        "property_type": getattr(getattr(prop, "property_type", None), "name", None),
+        "parent": getattr(prop, "parent", None),
+        "create_time": str(getattr(prop, "create_time", "")) if getattr(prop, "create_time", None) else None,
+        "update_time": str(getattr(prop, "update_time", "")) if getattr(prop, "update_time", None) else None,
+        "industry_category": getattr(getattr(prop, "industry_category", None), "name", None),
+        "time_zone": getattr(prop, "time_zone", None),
+        "currency_code": getattr(prop, "currency_code", None),
+        "service_level": getattr(getattr(prop, "service_level", None), "name", None),
+    })
+
+    # ---- Account (v1beta) via parent ----
+    account_id = None
+    account_name = None
+    if profile.get("parent", "").startswith("accounts/"):
+        account_id = profile["parent"].split("/", 1)[1]
+        acct, aerr = _safe_call(admin_beta.get_account, name=profile["parent"])
+        if aerr:
+            diag["errors"]["get_account_v1beta"] = aerr
+        else:
+            account_name = getattr(acct, "display_name", None)
+
+    profile.update({
+        "account_id": account_id,
+        "account_name": account_name,
+    })
+
+    # ---- Data Retention Settings (v1beta) ----
+    # Resource name: properties/{property_id}/dataRetentionSettings
+    dr, derr = _safe_call(admin_beta.get_data_retention_settings, name=f"properties/{property_id}/dataRetentionSettings")
+    if derr:
+        diag["errors"]["get_data_retention_settings_v1beta"] = derr
+    else:
+        profile.update({
+            "data_retention_duration": getattr(getattr(dr, "retention_duration", None), "name", None),
+            "reset_user_data_on_new_activity": getattr(dr, "reset_user_data_on_new_activity", None),
+            # Some orgs colloquially call this "user retention"; API surface is data retention settings.
+            "user_retention_duration": getattr(getattr(dr, "retention_duration", None), "name", None),
+        })
+
+    # ---- Google Signals Settings (v1alpha) ----
+    gs, gserr = _safe_call(
+        admin_alpha.get_google_signals_settings,
+        request=GetGoogleSignalsSettingsRequest(name=f"properties/{property_id}/googleSignalsSettings"),
+    )
+    if gserr:
+        diag["errors"]["get_google_signals_settings_v1alpha"] = gserr
+    else:
+        profile.update({
+            "google_signals_state": getattr(getattr(gs, "state", None), "name", None),
+            "google_signals_consent": getattr(getattr(gs, "consent", None), "name", None),
+        })
+
+    # ---- Attribution Settings (v1alpha) ----
+    attr, aerr = _safe_call(
+        admin_alpha.get_attribution_settings,
+        request=GetAttributionSettingsRequest(name=f"properties/{property_id}/attributionSettings"),
+    )
+    if aerr:
+        diag["errors"]["get_attribution_settings_v1alpha"] = aerr
+    else:
+        profile.update({
+            "acquisition_event_lookback_window": getattr(getattr(attr, "acquisition_conversion_event_lookback_window", None), "name", None),
+            "other_conversion_event_lookback_window": getattr(getattr(attr, "other_conversion_event_lookback_window", None), "name", None),
+            "reporting_attribution_model": getattr(getattr(attr, "reporting_attribution_model", None), "name", None),
+        })
+
+    # ---- Rollup Source Properties (v1alpha, only if property_type is ROLLUP) ----
+    if profile.get("property_type") == "ROLLUP":
+        rollups, rerr = _safe_list(
+            admin_alpha.list_rollup_property_source_links,
+            request=ListRollupPropertySourceLinksRequest(parent=f"properties/{property_id}"),
+        )
+        if rerr:
+            diag["errors"]["list_rollup_property_source_links_v1alpha"] = rerr
+        else:
+            # Each link typically references a source property
+            sources = []
+            for x in rollups:
+                sources.append({
+                    "name": getattr(x, "name", None),
+                    "source_property": getattr(x, "source_property", None),
+                })
+            profile["rollup_source_properties"] = sources
+
+    # ---- Subproperty Event Filters (v1alpha, only if property_type is SUBPROPERTY) ----
+    if profile.get("property_type") == "SUBPROPERTY":
+        filters, ferr = _safe_list(
+            admin_alpha.list_subproperty_event_filters,
+            request=ListSubpropertyEventFiltersRequest(parent=f"properties/{property_id}"),
+        )
+        if ferr:
+            diag["errors"]["list_subproperty_event_filters_v1alpha"] = ferr
+        else:
+            sub_filters = []
+            for f in filters:
+                sub_filters.append({
+                    "name": getattr(f, "name", None),
+                    "apply_to_property": getattr(f, "apply_to_property", None),
+                    "filter_expression": str(getattr(f, "filter_expression", "")) if getattr(f, "filter_expression", None) else None,
+                })
+            profile["subproperty_event_filters"] = sub_filters
+
+    # ---- Number of Events over past N days (Data API) ----
+    end = date.today()
+    start = end - timedelta(days=days_events_lookback)
+    try:
+        req = RunReportRequest(
+            property=f"properties/{property_id}",
+            date_ranges=[DateRange(start_date=str(start), end_date=str(end))],
+            metrics=[Metric(name="eventCount")],
+            limit=1,
+        )
+        resp = data_client.run_report(req)
+        total_events = 0
+        if resp.rows:
+            total_events = int(resp.rows[0].metric_values[0].value or 0)
+        profile["number_of_events_past_7_days"] = total_events
+    except Exception as e:
+        diag["errors"]["data_api_eventCount_7d"] = f"{type(e).__name__}: {e}"
+
+    # ---- Change history (Create/Update/Delete/Action Taken) (v1alpha) ----
+    # This requires account context. If we don't have account_id, skip.
+    if account_id:
+        try:
+            # Window
+            ch_end = date.today()
+            ch_start = ch_end - timedelta(days=change_history_days_lookback)
+
+            # SearchChangeHistoryEvents is account-scoped
+            req = SearchChangeHistoryEventsRequest(
+                account=f"accounts/{account_id}",
+                # Filter to property resource name prefix.
+                # The API supports filtering; here we keep it simple and post-filter in code.
+                # (If you want stricter server-side filters, we can add them.)
+                start_time=f"{ch_start.isoformat()}T00:00:00Z",
+                end_time=f"{ch_end.isoformat()}T23:59:59Z",
+            )
+            events = list(admin_alpha.search_change_history_events(request=req))
+
+            # Post-filter to only changes where any changed resource name contains this property
+            filtered = []
+            for ev in events:
+                # Each event has one or more changes. We capture high-level action info.
+                # Fields vary; we store what is generally present.
+                # Some events include actor_type, action, resource name(s).
+                ev_dict = {
+                    "event_time": str(getattr(ev, "event_time", "")) if getattr(ev, "event_time", None) else None,
+                    "actor_type": getattr(getattr(ev, "actor_type", None), "name", None),
+                    "action": getattr(getattr(ev, "action", None), "name", None),
+                    "changes": [],
+                }
+
+                changes = getattr(ev, "changes", None) or []
+                include = False
+                for c in changes:
+                    changed_resource = getattr(c, "resource", None)
+                    changed_resource_name = getattr(changed_resource, "name", None) if changed_resource else None
+                    if changed_resource_name and f"properties/{property_id}" in changed_resource_name:
+                        include = True
+                    ev_dict["changes"].append({
+                        "resource_name": changed_resource_name,
+                        "change_type": getattr(getattr(c, "change_type", None), "name", None),
+                        "old_value": str(getattr(c, "old_value", "")) if getattr(c, "old_value", None) else None,
+                        "new_value": str(getattr(c, "new_value", "")) if getattr(c, "new_value", None) else None,
+                    })
+
+                if include:
+                    filtered.append(ev_dict)
+
+            profile["change_history_window_days"] = change_history_days_lookback
+            profile["change_history_event_count"] = len(filtered)
+            profile["change_history_events_sample"] = filtered[:25]  # keep evidence bounded
+        except Exception as e:
+            diag["errors"]["search_change_history_events_v1alpha"] = f"{type(e).__name__}: {e}"
+    else:
+        profile["change_history_event_count"] = None
+        diag["availability"]["change_history"] = "skipped_no_account_parent"
+
+    return {"profile": profile, "diagnostics": diag}
+
+
+
+def admin_get_product_links_snapshot(admin: AnalyticsAdminServiceClient, property_id: str) -> Dict[str, Any]:
+    """
+    Returns counts and basic info for key Product Links.
+
+    Notes:
+      - Availability varies by GA Admin API version/channel and org enablement.
+      - We use hasattr + try/except to keep the audit robust.
+
+    Link types correspond to GA4 Admin → Product links surfaces. :contentReference[oaicite:1]{index=1}
+    """
+    parent = f"properties/{property_id}"
+
+    # Common Product Links
+    checks = {
+        # Google Ads links
+        "google_ads_links": "list_google_ads_links",
+
+        # BigQuery links
+        "bigquery_links": "list_big_query_links",
+
+        # Firebase links
+        "firebase_links": "list_firebase_links",
+
+        # Search Ads 360 links
+        "search_ads360_links": "list_search_ads360_links",
+
+        # Display & Video 360 advertiser links
+        "dv360_advertiser_links": "list_display_video360_advertiser_links",
+    }
+
+    snapshot: Dict[str, Any] = {"parent": parent, "links": {}}
+    for label, method in checks.items():
+        res = _safe_list(admin, method, parent=parent)
+
+        # To keep evidence lightweight, store only names/ids when items exist
+        item_summaries = None
+        if res["items"]:
+            item_summaries = []
+            for x in res["items"]:
+                # Most link resources have .name; some include platform IDs on specific fields.
+                item_summaries.append({
+                    "name": getattr(x, "name", None),
+                    "display_name": getattr(x, "display_name", None),
+                    "link_id": getattr(x, "link_id", None),
+                })
+
+        snapshot["links"][label] = {
+            "method": method,
+            "available": res["available"],
+            "count": res["count"],
+            "error": res["error"],
+            "items": item_summaries,
+        }
+
+    return snapshot
 
 def admin_get_enhanced_measurement(admin: AnalyticsAdminServiceClient, stream_name: str) -> Optional[Dict[str, Any]]:
     try:
@@ -186,6 +488,63 @@ def gtm_list_containers(gtm, account_id: str) -> List[Dict[str, Any]]:
 # Controls (MVP set from your Colab flow)
 # ----------------------------
 
+def control_property_profile(
+    *,
+    client_name: str,
+    property_id: str,
+    admin_beta: AnalyticsAdminServiceClient,
+    admin_alpha: AnalyticsAdminServiceClientV1Alpha,
+    data_client: BetaAnalyticsDataClient,
+) -> List[Finding]:
+    out = get_property_profile(
+        property_id=property_id,
+        admin_beta=admin_beta,
+        admin_alpha=admin_alpha,
+        data_client=data_client,
+        days_events_lookback=7,
+        change_history_days_lookback=90,
+    )
+
+    profile = out["profile"]
+    diag = out["diagnostics"]
+
+    # Define "core" fields we expect for a healthy profile pull
+    core_fields = [
+        "account_id", "account_name",
+        "property_name", "property_id",
+        "property_type", "parent",
+        "create_time", "update_time",
+        "industry_category", "time_zone", "currency_code", "service_level",
+        "number_of_events_past_7_days",
+        "google_signals_state",
+        "data_retention_duration", "reset_user_data_on_new_activity",
+        "acquisition_event_lookback_window", "other_conversion_event_lookback_window",
+        "reporting_attribution_model",
+    ]
+
+    present = [f for f in core_fields if profile.get(f) not in (None, "", [], {})]
+    missing = [f for f in core_fields if f not in present]
+
+    # Severity logic:
+    # - If property itself couldn’t be retrieved, that would have been caught earlier as fatal.
+    # - Here, warn if too many missing due to permissions/method availability.
+    status = "pass" if len(missing) <= 3 else "warn"
+    severity = "info" if status == "pass" else "medium"
+
+    return [Finding(
+        client_name, property_id,
+        "P-01", "Property profile available (metadata + retention + signals + attribution + usage + change history)",
+        severity, status,
+        {
+            "present_fields": present,
+            "missing_fields": missing,
+            "profile": profile,
+            "diagnostics": diag,
+        },
+        "If fields are missing, confirm Admin API access, required API enablement, and that the service account has Viewer access on the property (and Account for change history)."
+    )]
+
+
 def audit_ga4_property_mvp(
     *,
     client_name: str,
@@ -270,6 +629,55 @@ def audit_ga4_property_mvp(
             {"stream_name": s.name, "enhanced_measurement": ems},
             "Review enhanced measurement toggles against measurement strategy (and confirm consent impacts)."
         ))
+
+
+    # PL-01 Product links present
+    try:
+        pl = admin_get_product_links_snapshot(admin, property_id)
+
+        # Count links that were successfully enumerated and have count > 0
+        link_counts = {
+            k: v.get("count") for k, v in pl["links"].items()
+            if v.get("count") is not None
+        }
+        total_links = sum(c for c in link_counts.values() if isinstance(c, int))
+
+        # If *all* link types errored or are unavailable, treat as WARN (not FAIL)
+        any_enumerated = any(v.get("count") is not None for v in pl["links"].values())
+
+        if not any_enumerated:
+            findings.append(Finding(
+                client_name, property_id,
+                "PL-01", "Product links present (Google Ads / BigQuery / SA360 / DV360 / Firebase)",
+                "medium", "warn",
+                {"product_links": pl},
+                "Unable to enumerate product links via Admin API in this environment. Verify API enablement, permissions, and library version."
+            ))
+        else:
+            # Decide pass/warn based on whether any product links exist
+            status = "pass" if total_links > 0 else "warn"
+            severity = "info" if total_links > 0 else "medium"
+
+            findings.append(Finding(
+                client_name, property_id,
+                "PL-01", "Product links present (Google Ads / BigQuery / SA360 / DV360 / Firebase)",
+                severity, status,
+                {
+                    "total_links": total_links,
+                    "link_counts": link_counts,
+                    "details": pl,
+                },
+                "If no product links are present, consider linking relevant platforms (e.g., Google Ads, BigQuery, DV360/SA360, Firebase) to improve activation and governance."
+            ))
+    except Exception as e:
+        findings.append(Finding(
+            client_name, property_id,
+            "PL-01", "Product links present (Google Ads / BigQuery / SA360 / DV360 / Firebase)",
+            "medium", "warn",
+            {"exception_type": type(e).__name__, "exception_message": str(e)},
+            "Failed to evaluate product links. Validate Admin API access and retry."
+        ))
+
 
     # A-08 Key events configured
     try:
@@ -382,12 +790,18 @@ def run_audit(
     days_lookback: int = 30,
 ) -> pd.DataFrame:
     """
+    Run GA4/GTM audit across one or more clients/properties.
+
     clients: list of dicts with keys:
       - client_name (str)
-      - property_id (str or int)
+      - property_id (str or int)  [GA4 numeric property id]
       - gtm_account_id (optional str)
+
+    Returns:
+      Findings DataFrame (one row per control finding).
     """
-    admin_client, data_client, gtm = build_clients(creds)
+    # Updated: build both Admin clients + Data + GTM
+    admin_beta, admin_alpha, data_client, gtm = build_clients(creds)
 
     all_findings: List[Finding] = []
 
@@ -399,16 +813,29 @@ def run_audit(
         if not property_id:
             continue
 
+        # New: Property Profile control (v1beta + v1alpha + Data API + Change History)
+        all_findings.extend(
+            control_property_profile(
+                client_name=client_name,
+                property_id=property_id,
+                admin_beta=admin_beta,
+                admin_alpha=admin_alpha,
+                data_client=data_client,
+            )
+        )
+
+        # Existing: GA4 MVP audit (uses v1beta Admin client + Data API)
         all_findings.extend(
             audit_ga4_property_mvp(
                 client_name=client_name,
                 property_id=property_id,
-                admin=admin_client,
+                admin=admin_beta,
                 data_client=data_client,
                 days_lookback=days_lookback,
             )
         )
 
+        # Existing: optional GTM access check (only runs if gtm_account_id provided)
         if gtm_account_id:
             all_findings.extend(
                 gtm_access_check(
@@ -420,3 +847,4 @@ def run_audit(
             )
 
     return findings_to_df(all_findings)
+

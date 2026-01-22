@@ -145,6 +145,22 @@ if run_btn:
     st.subheader("Findings")
     st.dataframe(results_df, use_container_width=True)
 
+    # Optional: show extracted property profile from the P-01 evidence
+    st.subheader("Property Profile (extracted fields)")
+    try:
+        p01 = results_df[results_df["control_id"] == "P-01"].iloc[0]
+        profile = p01["evidence"].get("profile", {})
+        # Render a simple key/value table
+        prof_df = pd.DataFrame([{"field": k, "value": v} for k, v in profile.items() if k not in ("change_history_events_sample",)])
+        st.dataframe(prof_df, use_container_width=True)
+
+        with st.expander("Change history sample (up to 25 events)"):
+            ch = profile.get("change_history_events_sample", [])
+            st.json(ch)
+    except Exception:
+        st.info("Property profile not available in results.")
+
+
     st.subheader("Download")
     csv_bytes = results_df.to_csv(index=False).encode("utf-8")
     st.download_button(
