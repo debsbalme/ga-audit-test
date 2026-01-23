@@ -10,8 +10,6 @@ from __future__ import annotations
 from datetime import date
 from googleapiclient.discovery import build
 
-from __future__ import annotations
-
 from dataclasses import dataclass, asdict
 from datetime import date, timedelta
 from typing import Any, Dict, List, Optional, Tuple
