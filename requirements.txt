@@ -14,3 +14,5 @@ google-analytics-data>=0.18.0
 
 # ---- Google Tag Manager API ----
 google-api-python-client>=2.120.0
+
+googleapiclient

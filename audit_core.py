@@ -5,6 +5,8 @@ Core GA4 + GTM audit logic with a normalized findings model.
 - No Streamlit dependencies.
 - Auth-agnostic: expects a google.auth.credentials.Credentials object.
 """
+from datetime import date
+from googleapiclient.discovery import build
 
 from __future__ import annotations
 
@@ -544,6 +546,93 @@ def control_property_profile(
         "If fields are missing, confirm Admin API access, required API enablement, and that the service account has Viewer access on the property (and Account for change history)."
     )]
 
+def admin_list_custom_dimensions(admin_beta: AnalyticsAdminServiceClient, property_id: str) -> List[Dict[str, Any]]:
+    """
+    Lists GA4 custom dimensions for the property via Admin API v1beta.
+    """
+    parent = f"properties/{property_id}"
+    dims = list(admin_beta.list_custom_dimensions(parent=parent))
+    out: List[Dict[str, Any]] = []
+    for d in dims:
+        out.append({
+            "name": getattr(d, "name", None),  # resource name
+            "parameter_name": getattr(d, "parameter_name", None),
+            "display_name": getattr(d, "display_name", None),
+            "description": getattr(d, "description", None),
+            "scope": getattr(getattr(d, "scope", None), "name", None),  # EVENT / USER / ITEM
+            "disallow_ads_personalization": getattr(d, "disallow_ads_personalization", None),
+        })
+    return out
+
+
+def admin_list_custom_metrics(admin_beta: AnalyticsAdminServiceClient, property_id: str) -> List[Dict[str, Any]]:
+    """
+    Lists GA4 custom metrics for the property via Admin API v1beta.
+    """
+    parent = f"properties/{property_id}"
+    mets = list(admin_beta.list_custom_metrics(parent=parent))
+    out: List[Dict[str, Any]] = []
+    for m in mets:
+        out.append({
+            "name": getattr(m, "name", None),  # resource name
+            "parameter_name": getattr(m, "parameter_name", None),
+            "display_name": getattr(m, "display_name", None),
+            "description": getattr(m, "description", None),
+            "scope": getattr(getattr(m, "scope", None), "name", None),  # EVENT / USER / ITEM
+            "measurement_unit": getattr(getattr(m, "measurement_unit", None), "name", None),
+            "restricted_metric_type": getattr(getattr(m, "restricted_metric_type", None), "name", None),
+        })
+    return out
+
+def control_custom_definitions_inventory(
+    *,
+    client_name: str,
+    property_id: str,
+    admin_beta: AnalyticsAdminServiceClient,
+) -> List[Finding]:
+    # Custom Dimensions
+    custom_dims = []
+    dims_err = None
+    try:
+        custom_dims = admin_list_custom_dimensions(admin_beta, property_id)
+    except Exception as e:
+        dims_err = f"{type(e).__name__}: {e}"
+
+    # Custom Metrics
+    custom_mets = []
+    mets_err = None
+    try:
+        custom_mets = admin_list_custom_metrics(admin_beta, property_id)
+    except Exception as e:
+        mets_err = f"{type(e).__name__}: {e}"
+
+    # Determine status/severity
+    if dims_err and mets_err:
+        status = "warn"
+        severity = "medium"
+        rec = "Unable to enumerate custom definitions. Confirm Admin API access and that the service account has Viewer on the property."
+    else:
+        status = "pass"
+        severity = "info"
+        rec = "None."
+
+    return [Finding(
+        client_name, property_id,
+        "CMCD-01", "Custom definitions inventory (custom dimensions + custom metrics)",
+        severity, status,
+        {
+            "custom_dimensions_count": None if dims_err else len(custom_dims),
+            "custom_metrics_count": None if mets_err else len(custom_mets),
+            "custom_dimensions": custom_dims,
+            "custom_metrics": custom_mets,
+            "errors": {
+                "custom_dimensions": dims_err,
+                "custom_metrics": mets_err,
+            },
+        },
+        rec
+    )]
+
 
 def audit_ga4_property_mvp(
     *,
@@ -824,6 +913,14 @@ def run_audit(
             )
         )
 
+        all_findings.extend(
+            control_custom_definitions_inventory(
+                client_name=client_name,
+                property_id=property_id,
+                admin_beta=admin_beta,
+            )
+        )
+        
         # Existing: GA4 MVP audit (uses v1beta Admin client + Data API)
         all_findings.extend(
             audit_ga4_property_mvp(
@@ -848,3 +945,125 @@ def run_audit(
 
     return findings_to_df(all_findings)
 
+
+
+def get_profile_from_p01(results_df: pd.DataFrame, property_id: str) -> Dict[str, Any]:
+    """
+    Extract the P-01 profile evidence for a given property_id.
+    Returns the 'profile' dict stored in evidence.
+    """
+    subset = results_df[
+        (results_df["control_id"] == "P-01") &
+        (results_df["property_id"].astype(str) == str(property_id))
+    ]
+
+    if subset.empty:
+        raise ValueError(f"No P-01 row found for property_id={property_id}. Ensure control_property_profile runs before deck generation.")
+
+    evidence = subset.iloc[0]["evidence"]
+    profile = evidence.get("profile", {})
+    if not profile:
+        raise ValueError("P-01 evidence.profile is empty. Check that get_property_profile() succeeded.")
+
+    return profile
+
+
+def copy_slides_template(
+    *,
+    creds,
+    template_presentation_id: str,
+    new_name: str,
+    destination_folder_id: str | None = None,
+) -> str:
+    drive = build("drive", "v3", credentials=creds)
+
+    body = {"name": new_name}
+    if destination_folder_id:
+        body["parents"] = [destination_folder_id]
+
+    copied = drive.files().copy(
+        fileId=template_presentation_id,
+        body=body,
+    ).execute()
+
+    return copied["id"]
+
+
+def replace_placeholders_in_slides(
+    *,
+    creds,
+    presentation_id: str,
+    replacements: dict,
+) -> None:
+    slides = build("slides", "v1", credentials=creds)
+
+    requests = []
+    for placeholder, value in replacements.items():
+        requests.append({
+            "replaceAllText": {
+                "containsText": {"text": placeholder, "matchCase": True},
+                "replaceText": str(value),
+            }
+        })
+
+    slides.presentations().batchUpdate(
+        presentationId=presentation_id,
+        body={"requests": requests},
+    ).execute()
+
+
+def generate_property_audit_deck_from_results(
+    *,
+    creds,
+    results_df: pd.DataFrame,
+    property_id: str,
+    template_presentation_id: str,
+    destination_folder_id: str | None = None,
+) -> dict:
+    """
+    Uses P-01 (Property Profile) control evidence to populate placeholders:
+      {{ACCOUNT_NAME}}, {{PROPERTY_NAME}}, {{PROPERTY_ID}}
+
+    Names the output deck:
+      GA4 Audit Property <PROPERTY_ID> <YYYY-MM-DD>
+    """
+    profile = get_profile_from_p01(results_df, property_id=str(property_id))
+
+    account_name = profile.get("account_name") or "Unknown Account"
+    prop_name = profile.get("property_name") or "Unknown Property"
+    prop_id = profile.get("property_id") or str(property_id)
+
+    today = date.today().isoformat()
+    new_name = f"GA4 Audit Property {prop_id} {today}"
+
+    # 1) Copy template with new name
+    new_presentation_id = copy_slides_template(
+        creds=creds,
+        template_presentation_id=template_presentation_id,
+        new_name=new_name,
+        destination_folder_id=destination_folder_id,
+    )
+
+    # 2) Replace placeholders from P-01 profile
+    replace_placeholders_in_slides(
+        creds=creds,
+        presentation_id=new_presentation_id,
+        replacements={
+            "{{ACCOUNT_NAME}}": account_name,
+            "{{PROPERTY_NAME}}": prop_name,
+            "{{PROPERTY_ID}}": prop_id,
+        },
+    )
+
+    url = f"https://docs.google.com/presentation/d/{new_presentation_id}/edit"
+
+    return {
+        "presentation_id": new_presentation_id,
+        "presentation_name": new_name,
+        "url": url,
+        "placeholders_used": {
+            "{{ACCOUNT_NAME}}": account_name,
+            "{{PROPERTY_NAME}}": prop_name,
+            "{{PROPERTY_ID}}": prop_id,
+        }
+    }

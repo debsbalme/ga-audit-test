@@ -20,7 +20,7 @@ import streamlit as st
 import google.auth
 from google.oauth2 import service_account
 
-from audit_core import run_audit
+from audit_core import run_audit, generate_property_audit_deck_from_results
 
 st.set_page_config(page_title="GA4 / GTM Audit MVP", layout="wide")
 st.title("GA4 / GTM Audit MVP")
@@ -160,6 +160,70 @@ if run_btn:
     except Exception:
         st.info("Property profile not available in results.")
 
+st.subheader("Custom Definitions (GA4)")
+
+# Filter to the custom definitions control
+cmcd_df = results_df[results_df["control_id"] == "CMCD-01"]
+
+if cmcd_df.empty:
+    st.info("No custom definitions inventory available.")
+else:
+    # Assume one row per property in single-property mode
+    row = cmcd_df.iloc[0]
+    evidence = row["evidence"]
+
+    # ---- Custom Dimensions ----
+    st.markdown("### Custom Dimensions")
+
+    custom_dims = evidence.get("custom_dimensions", [])
+    if custom_dims:
+        dims_df = pd.DataFrame(custom_dims)
+
+        # Optional column ordering for readability
+        preferred_dim_cols = [
+            "parameter_name",
+            "display_name",
+            "scope",
+            "description",
+            "disallow_ads_personalization",
+            "name",
+        ]
+        dims_df = dims_df[[c for c in preferred_dim_cols if c in dims_df.columns]]
+
+        st.dataframe(dims_df, use_container_width=True)
+        st.caption(f"Total custom dimensions: {len(dims_df)}")
+    else:
+        st.info("No custom dimensions found for this property.")
+
+    # ---- Custom Metrics ----
+    st.markdown("### Custom Metrics")
+
+    custom_mets = evidence.get("custom_metrics", [])
+    if custom_mets:
+        mets_df = pd.DataFrame(custom_mets)
+
+        preferred_met_cols = [
+            "parameter_name",
+            "display_name",
+            "scope",
+            "measurement_unit",
+            "restricted_metric_type",
+            "description",
+            "name",
+        ]
+        mets_df = mets_df[[c for c in preferred_met_cols if c in mets_df.columns]]
+
+        st.dataframe(mets_df, use_container_width=True)
+        st.caption(f"Total custom metrics: {len(mets_df)}")
+    else:
+        st.info("No custom metrics found for this property.")
+
+    # ---- Errors / diagnostics ----
+    errors = evidence.get("errors", {})
+    if any(errors.values()):
+        with st.expander("Custom definitions diagnostics"):
+            st.json(errors)
+
 
     st.subheader("Download")
     csv_bytes = results_df.to_csv(index=False).encode("utf-8")
@@ -169,3 +233,22 @@ if run_btn:
         file_name="ga_audit_findings.csv",
         mime="text/csv",
     )
+
+st.subheader("Deliverable")
+
+TEMPLATE_ID = st.text_input("Google Slides Template ID", placeholder="Paste template presentation ID")
+FOLDER_ID = st.text_input("Destination Folder ID (optional)", placeholder="Paste folder ID or leave blank")
+
+if st.button("Generate Google Slides Deck", disabled=not TEMPLATE_ID.strip()):
+    deck = generate_property_audit_deck_from_results(
+        creds=creds,
+        results_df=results_df,
+        property_id=clients[0]["property_id"],  # single-property mode
+        template_presentation_id=TEMPLATE_ID.strip(),
+        destination_folder_id=FOLDER_ID.strip() or None,
+    )
+
+    st.success(f"Deck created: {deck['presentation_name']}")
+    st.markdown(f"[Open deck]({deck['url']})")
+    with st.expander("Placeholders used"):
+        st.json(deck["placeholders_used"])
