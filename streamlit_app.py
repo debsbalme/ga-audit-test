@@ -27,10 +27,19 @@ st.set_page_config(page_title="GA4 / GTM Audit MVP", layout="wide")
 st.title("GA4 / GTM Audit MVP")
 
 # ---- Scopes (adjust as needed) ----
+# ----------------------------
 SCOPES = [
+    # GA4 + GTM
     "https://www.googleapis.com/auth/analytics.readonly",
     "https://www.googleapis.com/auth/tagmanager.readonly",
+
+    # Drive (copy/rename/move files)
+    "https://www.googleapis.com/auth/drive",
+
+    # Slides (batchUpdate / replaceAllText)
+    "https://www.googleapis.com/auth/presentations",
 ]
+
 
 # ----------------------------
 # Auth seam (replace later with web OAuth)
