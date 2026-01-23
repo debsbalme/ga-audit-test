@@ -984,9 +984,11 @@ def copy_slides_template(
     copied = drive.files().copy(
         fileId=template_presentation_id,
         body=body,
+        supportsAllDrives=True,   # <-- important for Shared Drives
     ).execute()
 
     return copied["id"]
+
 
 
 def replace_placeholders_in_slides(
