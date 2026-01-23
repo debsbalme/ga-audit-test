@@ -20,7 +20,11 @@ import streamlit as st
 import google.auth
 from google.oauth2 import service_account
 
-from audit_core import (run_audit, generate_property_audit_deck_from_results)
+from audit_core import (
+    run_audit,
+    generate_property_audit_deck_from_results,
+)
+
 
 st.set_page_config(page_title="GA4 / GTM Audit MVP", layout="wide")
 st.title("GA4 / GTM Audit MVP")
