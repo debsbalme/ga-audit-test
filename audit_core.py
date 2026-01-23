@@ -967,28 +967,27 @@ def get_profile_from_p01(results_df: pd.DataFrame, property_id: str) -> Dict[str
 
     return profile
 
-
 def copy_slides_template(
     *,
     creds,
     template_presentation_id: str,
     new_name: str,
-    destination_folder_id: str | None = None,
+    destination_folder_id: str,
 ) -> str:
     drive = build("drive", "v3", credentials=creds)
 
-    body = {"name": new_name}
-    if destination_folder_id:
-        body["parents"] = [destination_folder_id]
+    body = {
+        "name": new_name,
+        "parents": [destination_folder_id],  # MUST be inside the Shared Drive
+    }
 
     copied = drive.files().copy(
         fileId=template_presentation_id,
         body=body,
-        supportsAllDrives=True,   # <-- important for Shared Drives
+        supportsAllDrives=True,              # REQUIRED
     ).execute()
 
     return copied["id"]
-
 
 
 def replace_placeholders_in_slides(
