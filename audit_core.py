@@ -5,6 +5,8 @@ Core GA4 + GTM audit logic with a normalized findings model.
 - No Streamlit dependencies.
 - Auth-agnostic: expects a google.auth.credentials.Credentials object.
 """
+from __future__ import annotations
+
 from datetime import date
 from googleapiclient.discovery import build
 
