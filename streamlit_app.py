@@ -88,10 +88,6 @@ creds = get_user_credentials_via_oauth(
 )
 #    client_secret_path = "client_secret.json"  # ensure this file exists in your app directory
 
-creds = get_user_credentials_via_oauth(
-        client_secret_path=client_secret_path,
-        scopes=SCOPES,
-    )
 
 if creds:
         st.success("Signed in with Google.")
