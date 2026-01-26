@@ -93,3 +93,8 @@ def get_user_credentials_via_oauth(
     st.info("Authenticate with Google to continue:")
     st.link_button("Sign in with Google", auth_url)
     return None
+
+def oauth_logout(token_key: str = "google_oauth_token"):
+    if token_key in st.session_state:
+        del st.session_state[token_key]
+    st.success("Logged out (local session cleared).")

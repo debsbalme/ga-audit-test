@@ -273,3 +273,4 @@ if st.button("Generate Slides Deck", disabled=not can_generate):
 
     st.success(f"Deck created: {new_name}")
     st.markdown(f"[Open deck]({link})")
+
