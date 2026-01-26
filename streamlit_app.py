@@ -51,7 +51,7 @@ def write_oauth_client_secret_to_tempfile() -> str:
     Writes the OAuth client JSON from Streamlit Secrets to a temp file.
     Returns the temp file path.
     """
-    raw = st.secrets["google_oauth"]["client_secret_json"]
+    raw = st.secrets["client_secret_web_json"]
     # Validate it is valid JSON (helps catch formatting issues in secrets)
     _ = json.loads(raw)
 

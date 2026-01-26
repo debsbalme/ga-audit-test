@@ -14,7 +14,7 @@ def get_streamlit_base_url() -> str:
     For local dev: http://localhost:8502
     For deployed: set STREAMLIT_BASE_URL env var (recommended).
     """
-    return os.environ.get("STREAMLIT_BASE_URL", "http://localhost:8502")
+    return os.environ.get("STREAMLIT_BASE_URL", "http://localhost:8501")
 
 
 def build_flow(client_secret_path: str, scopes: list[str]) -> Flow:
