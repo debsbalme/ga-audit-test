@@ -23,6 +23,11 @@ from audit_core import (
     generate_property_audit_deck_from_results,
 )
 
+from datetime import date
+from oauth_streamlit import get_user_credentials_via_oauth, oauth_logout
+from deliverables_slides import create_google_slides_presentation
+
+
 st.set_page_config(page_title="GA4 / GTM Audit MVP", layout="wide")
 st.title("GA4 / GTM Audit MVP")
 
@@ -59,41 +64,26 @@ if "results_df" not in st.session_state:
 # ----------------------------
 # Sidebar
 # ----------------------------
-
 with st.sidebar:
-    st.header("Authentication (temporary)")
-    auth_mode = st.radio(
-        "Choose auth mode",
-        options=["Service Account JSON (recommended)", "Application Default Credentials (ADC)"],
-        index=0,
-        help="For testing in locked-down orgs, Service Account is usually easiest. Replace this later with web OAuth.",
+    st.header("Authentication (Google OAuth)")
+
+    client_secret_path = "client_secret.json"  # ensure this file exists in your app directory
+
+    creds = get_user_credentials_via_oauth(
+        client_secret_path=client_secret_path,
+        scopes=SCOPES,
     )
 
-    creds = None
-
-    if auth_mode == "Service Account JSON (recommended)":
-        sa_file = st.file_uploader("Upload Service Account JSON", type=["json"])
-        if sa_file is not None:
-            sa_info = json.load(sa_file)
-            try:
-                creds = get_credentials_from_service_account_json(sa_info)
-                st.success("Service Account credentials loaded.")
-            except Exception as e:
-                st.error(f"Failed to load service account creds: {e}")
-
-        st.caption(
-            "GA4 requirement: add the service account email as a Viewer on each GA4 property. "
-            "GTM access via service account may not be available; GTM checks may warn/skip."
-        )
-
+    if creds:
+        st.success("Signed in with Google.")
+        if st.button("Logout"):
+            oauth_logout()
+            st.rerun()
     else:
-        st.caption("ADC requires the environment running Streamlit to already be authenticated (e.g., gcloud auth).")
-        if st.button("Load ADC credentials"):
-            try:
-                creds = get_credentials_from_adc()
-                st.success("ADC credentials loaded.")
-            except Exception as e:
-                st.error(f"Failed to load ADC creds: {e}")
+        st.stop()
+
+
+
 
     st.divider()
     days_lookback = st.number_input("Lookback days", min_value=7, max_value=365, value=30, step=1)
@@ -237,25 +227,34 @@ if results_df is not None and not results_df.empty:
     )
 
     # ---- Deliverable (Slides) ----
-    st.subheader("Deliverable (Google Slides)")
-    TEMPLATE_ID = st.text_input("Google Slides Template ID", placeholder="Paste template presentation ID")
-    FOLDER_ID = st.text_input("Destination Folder ID (optional)", placeholder="Paste folder ID or leave blank")
+st.subheader("Deliverable (Google Slides)")
 
-    can_generate_deck = bool(TEMPLATE_ID.strip()) and (creds is not None) and (len(clients) > 0)
+TEMPLATE_ID = st.text_input("Google Slides Template ID", placeholder="Template presentation ID")
+FOLDER_ID = st.text_input("Destination Shared Drive Folder ID", placeholder="Folder ID (inside Shared Drive)")
 
-    if st.button("Generate Google Slides Deck", disabled=not can_generate_deck):
-        deck = generate_property_audit_deck_from_results(
-            creds=creds,
-            results_df=results_df,
-            property_id=str(clients[0]["property_id"]),  # in single-property mode this is correct
-            template_presentation_id=TEMPLATE_ID.strip(),
-            destination_folder_id=FOLDER_ID.strip() or None,
-        )
+can_generate = bool(TEMPLATE_ID.strip()) and bool(FOLDER_ID.strip()) and (results_df is not None)
 
-        st.success(f"Deck created: {deck['presentation_name']}")
-        st.markdown(f"[Open deck]({deck['url']})")
-        with st.expander("Placeholders used"):
-            st.json(deck["placeholders_used"])
+if st.button("Generate Slides Deck", disabled=not can_generate):
+    # Pull P-01 profile
+    p01 = results_df[results_df["control_id"] == "P-01"].iloc[0]
+    profile = p01["evidence"].get("profile", {})
 
-else:
-    st.info("Run an audit to see findings, profiles, custom definitions, and generate deliverables.")
+    account_name = profile.get("account_name", "Unknown Account")
+    property_name = profile.get("property_name", "Unknown Property")
+    property_id = str(profile.get("property_id", clients[0]["property_id"]))
+    today = date.today().isoformat()
+
+    new_name = f"GA4 Audit Property {property_id} {today}"
+
+    pres_id, link = create_google_slides_presentation(
+        template_id=TEMPLATE_ID.strip(),
+        account_name=account_name,
+        property_id=property_id,
+        date_str=today,
+        drive_folder_id=FOLDER_ID.strip(),
+        new_presentation_name=new_name,
+        creds=creds,
+    )
+
+    st.success(f"Deck created: {new_name}")
+    st.markdown(f"[Open deck]({link})")
