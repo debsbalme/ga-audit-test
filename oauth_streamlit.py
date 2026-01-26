@@ -6,6 +6,7 @@ from typing import Optional, Dict, Any
 import streamlit as st
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import Flow
+from google.auth.transport.requests import Request
 
 
 def _get_base_url() -> str:
@@ -42,11 +43,36 @@ def get_user_credentials_via_oauth(
     redirect_uri = f"{base_url}/"
 
     # 1) Reuse token if available
+    # 1) Reuse token if available
     token_dict = st.session_state.get(token_key)
     if token_dict:
-        creds = Credentials.from_authorized_user_info(token_dict, scopes=scopes)
-        if creds and creds.valid:
-            return creds
+        try:
+            creds = Credentials.from_authorized_user_info(token_dict, scopes=scopes)
+
+        # If access token expired but we have a refresh token, refresh it
+            if creds and not creds.valid:
+                if getattr(creds, "refresh_token", None):
+                    creds.refresh(Request())
+                # Persist updated token back into session_state
+                    st.session_state[token_key] = {
+                    "token": creds.token,
+                    "refresh_token": creds.refresh_token,
+                    "token_uri": creds.token_uri,
+                    "client_id": creds.client_id,
+                    "client_secret": creds.client_secret,
+                    "scopes": creds.scopes,
+                }
+            else:
+                # No refresh token means we must re-consent
+                return None
+
+            if creds and creds.valid:
+                return creds
+
+        except Exception as e:
+            st.error(f"Failed to rebuild credentials from session token: {type(e).__name__}: {e}")
+        return None
+
 
     # 2) Build flow with explicit redirect URI
     flow = Flow.from_client_secrets_file(
@@ -77,7 +103,9 @@ def get_user_credentials_via_oauth(
             }
 
             _clear_query_params()
+
             st.success("Google OAuth complete.")
+            
             st.rerun()
         except Exception as e:
             st.error(f"OAuth token exchange failed: {type(e).__name__}: {e}")
@@ -117,6 +145,8 @@ def render_auth_status(creds, *, required_scopes: list[str] | None = None):
         st.write("Valid:", getattr(creds, "valid", None))
         st.write("Expired:", getattr(creds, "expired", None))
         st.write("Has refresh token:", bool(getattr(creds, "refresh_token", None)))
+        st.write("Token dict keys:", list(st.session_state.get("google_oauth_token", {}).keys()))
+        st.write("Has refresh_token in session:", bool(st.session_state.get("google_oauth_token", {}).get("refresh_token")))
 
         scopes = list(getattr(creds, "scopes", []) or [])
         st.write("Scopes on creds:", scopes)
