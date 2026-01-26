@@ -98,3 +98,53 @@ def oauth_logout(token_key: str = "google_oauth_token"):
     if token_key in st.session_state:
         del st.session_state[token_key]
     st.success("Logged out (local session cleared).")
+
+
+from __future__ import annotations
+
+from typing import Optional
+import streamlit as st
+
+def render_auth_status(creds, *, required_scopes: list[str] | None = None):
+    """
+    UI helper to display whether OAuth is working.
+    Safe to call even when creds is None.
+    """
+    with st.expander("Auth Debug", expanded=True):
+        if creds is None:
+            st.error("Not authenticated (creds is None).")
+            st.write("Session keys:", list(st.session_state.keys()))
+            return
+
+        st.success("Authenticated (creds object present).")
+
+        # Basic flags
+        st.write("Valid:", getattr(creds, "valid", None))
+        st.write("Expired:", getattr(creds, "expired", None))
+        st.write("Has refresh token:", bool(getattr(creds, "refresh_token", None)))
+
+        scopes = list(getattr(creds, "scopes", []) or [])
+        st.write("Scopes on creds:", scopes)
+
+        if required_scopes:
+            missing = [s for s in required_scopes if s not in scopes]
+            if missing:
+                st.warning(f"Missing required scopes: {missing}")
+            else:
+                st.success("All required scopes are present.")
+
+
+from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
+
+def test_drive_access(creds):
+    with st.expander("Auth API Test (Drive)", expanded=False):
+        try:
+            drive = build("drive", "v3", credentials=creds)
+            about = drive.about().get(fields="user,storageQuota").execute()
+            st.success("Drive API call succeeded.")
+            st.json(about)
+        except HttpError as e:
+            st.error(f"Drive API call failed: {e}")
+        except Exception as e:
+            st.error(f"Drive API call failed: {type(e).__name__}: {e}")

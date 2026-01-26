@@ -25,7 +25,7 @@ from audit_core import (
 )
 
 from datetime import date
-from oauth_streamlit import get_user_credentials_via_oauth, oauth_logout
+from oauth_streamlit import get_user_credentials_via_oauth, oauth_logout,test_drive_access,render_auth_status
 from deliverables_slides import create_google_slides_presentation
 
 
@@ -88,15 +88,18 @@ creds = get_user_credentials_via_oauth(
 )
 #    client_secret_path = "client_secret.json"  # ensure this file exists in your app directory
 
+render_auth_status(creds, required_scopes=SCOPES)
+
 
 if creds:
+        test_drive_access(creds)
         st.success("Signed in with Google.")
         if st.button("Logout"):
             oauth_logout()
             st.rerun()
-else:
-        st.stop()
 
+if creds is None:
+    st.stop()
 
 
 
