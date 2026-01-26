@@ -100,11 +100,6 @@ def oauth_logout(token_key: str = "google_oauth_token"):
     st.success("Logged out (local session cleared).")
 
 
-from __future__ import annotations
-
-from typing import Optional
-import streamlit as st
-
 def render_auth_status(creds, *, required_scopes: list[str] | None = None):
     """
     UI helper to display whether OAuth is working.
