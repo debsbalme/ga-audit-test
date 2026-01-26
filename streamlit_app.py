@@ -13,6 +13,7 @@ Enhancement:
 import json
 from typing import Any, Dict, List
 
+import tempfile
 import pandas as pd
 import streamlit as st
 import google.auth
@@ -45,6 +46,19 @@ SCOPES = [
     "https://www.googleapis.com/auth/presentations",
 ]
 
+def write_oauth_client_secret_to_tempfile() -> str:
+    """
+    Writes the OAuth client JSON from Streamlit Secrets to a temp file.
+    Returns the temp file path.
+    """
+    raw = st.secrets["google_oauth"]["client_secret_json"]
+    # Validate it is valid JSON (helps catch formatting issues in secrets)
+    _ = json.loads(raw)
+
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".json")
+    tmp.write(raw.encode("utf-8"))
+    tmp.flush()
+    return tmp.name
 
 # ----------------------------
 # Auth seam (replace later with web OAuth)
@@ -67,19 +81,24 @@ if "results_df" not in st.session_state:
 with st.sidebar:
     st.header("Authentication (Google OAuth)")
 
-    client_secret_path = "client_secret.json"  # ensure this file exists in your app directory
+client_secret_path = write_oauth_client_secret_to_tempfile()
+creds = get_user_credentials_via_oauth(
+    client_secret_path=client_secret_path,
+    scopes=SCOPES,
+)
+#    client_secret_path = "client_secret.json"  # ensure this file exists in your app directory
 
-    creds = get_user_credentials_via_oauth(
+creds = get_user_credentials_via_oauth(
         client_secret_path=client_secret_path,
         scopes=SCOPES,
     )
 
-    if creds:
+if creds:
         st.success("Signed in with Google.")
         if st.button("Logout"):
             oauth_logout()
             st.rerun()
-    else:
+else:
         st.stop()
 
 
