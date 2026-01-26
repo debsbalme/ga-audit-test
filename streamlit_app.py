@@ -104,8 +104,8 @@ else:
 
 
 
-    st.divider()
-    days_lookback = st.number_input("Lookback days", min_value=7, max_value=365, value=30, step=1)
+st.divider()
+days_lookback = st.number_input("Lookback days", min_value=7, max_value=365, value=30, step=1)
 
 # ----------------------------
 # Main: input mode
